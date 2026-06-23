@@ -2,7 +2,15 @@ import { io } from 'socket.io-client';
 
 let socketInstance = null;
 
+export function isRealtimeEnabled() {
+    return import.meta.env.VITE_DISABLE_REALTIME !== 'true';
+}
+
 export function initializeSocket(projectId) {
+    if (!isRealtimeEnabled()) {
+        return null;
+    }
+
     if (socketInstance) {
         socketInstance.disconnect();
     }
@@ -24,7 +32,12 @@ export function receiveMessage(eventName, callback) {
 }
 
 export function sendMessage(eventName, data) {
+    if (!socketInstance) {
+        return false;
+    }
+
     socketInstance?.emit(eventName, data);
+    return true;
 }
 
 export function disconnectSocket() {

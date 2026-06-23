@@ -17,7 +17,7 @@ import {
     X,
 } from 'lucide-react';
 import axios from '../config/axios.js';
-import { disconnectSocket, initializeSocket, receiveMessage, sendMessage } from '../config/socket.js';
+import { disconnectSocket, initializeSocket, isRealtimeEnabled, receiveMessage, sendMessage } from '../config/socket.js';
 import { getWebContainer } from '../config/webcontainer.js';
 import { useUser } from '../context/UserContext.jsx';
 
@@ -143,6 +143,39 @@ export default function Project() {
         }
     }, [ projectId ]);
 
+    const applyAiResult = useCallback(result => {
+        const aiMessage = {
+            message: result,
+            sender: {
+                _id: 'ai',
+                email: 'AI',
+            },
+            createdAt: new Date().toISOString(),
+        };
+
+        setMessages(prev => [ ...prev, aiMessage ]);
+
+        try {
+            const parsed = JSON.parse(result);
+
+            if (parsed.fileTree && Object.keys(parsed.fileTree).length > 0) {
+                setFileTree(prev => {
+                    const nextTree = { ...prev, ...parsed.fileTree };
+                    saveFileTree(nextTree);
+
+                    const nextFirstFile = Object.keys(parsed.fileTree)[ 0 ];
+                    if (nextFirstFile) {
+                        openFile(nextFirstFile);
+                    }
+
+                    return nextTree;
+                });
+            }
+        } catch (parseError) {
+            console.warn(parseError);
+        }
+    }, [ openFile, saveFileTree ]);
+
     const handleAddFile = useCallback(() => {
         const typedName = window.prompt('Enter file name, for example index.html');
         const fileName = typedName?.trim().replace(/^\/+/, '');
@@ -189,34 +222,17 @@ export default function Project() {
                     openFile(firstFile);
                 }
 
-                initializeSocket(projectId);
-                receiveMessage('project-message', data => {
-                    setMessages(prev => [ ...prev, data ]);
-
-                    if (data.sender?._id !== 'ai') {
-                        return;
-                    }
-
-                    try {
-                        const parsed = JSON.parse(data.message);
-
-                        if (parsed.fileTree && Object.keys(parsed.fileTree).length > 0) {
-                            setFileTree(prev => {
-                                const nextTree = { ...prev, ...parsed.fileTree };
-                                saveFileTree(nextTree);
-
-                                const nextFirstFile = Object.keys(parsed.fileTree)[ 0 ];
-                                if (nextFirstFile) {
-                                    openFile(nextFirstFile);
-                                }
-
-                                return nextTree;
-                            });
+                if (isRealtimeEnabled()) {
+                    initializeSocket(projectId);
+                    receiveMessage('project-message', data => {
+                        if (data.sender?._id === 'ai') {
+                            applyAiResult(data.message);
+                            return;
                         }
-                    } catch (parseError) {
-                        console.warn(parseError);
-                    }
-                });
+
+                        setMessages(prev => [ ...prev, data ]);
+                    });
+                }
 
                 getWebContainer()
                     .then(setWebContainer)
@@ -233,7 +249,7 @@ export default function Project() {
         return () => {
             disconnectSocket();
         };
-    }, [ openFile, projectId, saveFileTree ]);
+    }, [ applyAiResult, openFile, projectId, saveFileTree ]);
 
     useEffect(() => {
         if (messageBoxRef.current) {
@@ -280,7 +296,7 @@ export default function Project() {
         }
     }
 
-    function submitMessage(event) {
+    async function submitMessage(event) {
         event.preventDefault();
 
         if (!message.trim()) {
@@ -293,9 +309,23 @@ export default function Project() {
             createdAt: new Date().toISOString(),
         };
 
-        sendMessage('project-message', nextMessage);
+        const deliveredRealtime = sendMessage('project-message', nextMessage);
         setMessages(prev => [ ...prev, nextMessage ]);
         setMessage('');
+
+        if (!deliveredRealtime && message.includes('@ai')) {
+            try {
+                const prompt = message.replace('@ai', '').trim();
+                const res = await axios.post('/ai/get-result', { prompt });
+                applyAiResult(res.data.result);
+            } catch (err) {
+                const fallback = JSON.stringify({
+                    text: err.response?.data?.error || 'AI request failed. Please check the backend configuration.',
+                    fileTree: {},
+                });
+                applyAiResult(fallback);
+            }
+        }
     }
 
     function updateCurrentFile(contents) {
